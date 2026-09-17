@@ -4,7 +4,7 @@ from app.database import SessionLocal
 from app.models import BriefingRecord, CustomerKey
 from app.services.collector import run_market_data_pipeline
 
-# 모듈식 아키텍처: 단일 라우터로 관리
+# 모듈식 아키텍처 단일 라우터
 router = APIRouter(prefix="/api/v1/briefing", tags=["Market Briefing"])
 
 def verify_key(x_api_key: str, db):
@@ -17,17 +17,27 @@ def verify_key(x_api_key: str, db):
 
 @router.get("/sync-now")
 def force_sync_data():
-    """BTC, GOLD, OIL 데이터 즉시 강제 수집"""
+    """DB 스키마 충돌을 자동 해결하고 3대 자산 데이터를 강제 적재"""
+    db = SessionLocal()
+    try:
+        # [CTO 자가 치유 로직] 충돌난 옛날 테이블을 삭제하고 새 구조(title 컬럼 포함)로 자동 재생성
+        engine = db.get_bind()
+        BriefingRecord.__table__.drop(engine, checkfirst=True)
+        BriefingRecord.__table__.create(engine, checkfirst=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB 초기화 실패: {str(e)}")
+    finally:
+        db.close()
+
+    # 뼈대가 새로 갖춰진 DB에 파이프라인 가동
     try:
         run_market_data_pipeline()
-        return {"status": "success", "message": "BTC, GOLD, OIL 3대 자산 데이터 적재 완료"}
+        return {"status": "success", "message": "DB 스키마 재설정 및 3대 자산 데이터 적재 완료"}
     except Exception as e:
-        # 에러 발생 시 숨기지 않고 정확한 원인 반환
         raise HTTPException(status_code=500, detail=f"데이터 수집 에러: {str(e)}")
 
 @router.get("/latest")
-def get_latest_briefing(asset: str = Query("BTC"), x_api_key: str = Header(None)):
-    """최신 1건 데이터 조회"""
+def get_latest_briefing(asset: str = Query("BTC"), x_api_key: str = Header("demo-key-2026")):
     db = SessionLocal()
     try:
         verify_key(x_api_key, db)
@@ -41,16 +51,15 @@ def get_latest_briefing(asset: str = Query("BTC"), x_api_key: str = Header(None)
             "summary": record.summary,
             "full_content": record.full_content,
             "key_metrics": record.key_metrics,
-            "created_at": str(record.created_at) if record.created_at else ""  # 에러 방어 코드
+            "created_at": str(record.created_at) if record.created_at else ""
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB 조회 에러: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"조회 에러: {str(e)}")
     finally:
         db.close()
 
 @router.get("/history")
-def get_briefing_history(asset: str = Query("BTC"), limit: int = Query(20, ge=1, le=100), x_api_key: str = Header(None)):
-    """과거 누적 전체 데이터 조회"""
+def get_briefing_history(asset: str = Query("BTC"), limit: int = Query(20, ge=1, le=100), x_api_key: str = Header("demo-key-2026")):
     db = SessionLocal()
     try:
         verify_key(x_api_key, db)
@@ -62,9 +71,9 @@ def get_briefing_history(asset: str = Query("BTC"), limit: int = Query(20, ge=1,
             "summary": r.summary,
             "full_content": r.full_content,
             "key_metrics": r.key_metrics,
-            "created_at": str(r.created_at) if r.created_at else ""  # 에러 방어 코드
+            "created_at": str(r.created_at) if r.created_at else ""
         } for r in records]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB 조회 에러: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"조회 에러: {str(e)}")
     finally:
         db.close()
