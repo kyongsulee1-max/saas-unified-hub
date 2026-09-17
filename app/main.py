@@ -1,12 +1,18 @@
 from fastapi import FastAPI
-from app.routers import briefing
-# 향후 추가될 docuflow, bankflow 등은 여기에 import 합니다.
+from app.routers import briefing, docuflow, bankflow
 
-app = FastAPI(title="SaaS Unified Hub")
+# FastAPI 앱 인스턴스 생성
+app = FastAPI(title="SaaS Unified Hub", version="0.1.0")
 
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "SaaS Hub is running"}
 
-# 라우터 연결 (주소 중복을 막기 위해 여기서 prefix를 강제로 씌우지 않습니다)
+# [서비스 1] 마켓 브리핑 모듈 연결
 app.include_router(briefing.router)
+
+# [서비스 2] 문서 파싱 모듈 연결
+app.include_router(docuflow.router)
+
+# [서비스 3] 은행 거래내역 분석 모듈 연결
+app.include_router(bankflow.router)
