@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException, Header, Query
 from datetime import datetime
-import json
 from app.database import SessionLocal
 from app.models import BriefingRecord, CustomerKey
 from app.services.collector import run_market_data_pipeline
@@ -8,9 +7,7 @@ from app.services.collector import run_market_data_pipeline
 router = APIRouter(prefix="/api/v1/briefing", tags=["Market Briefing"])
 
 def verify_key(x_api_key: str, db):
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="API Key is missing")
-    if x_api_key == "demo-key-2026":
+    if not x_api_key or x_api_key == "demo-key-2026":
         return True
     key_record = db.query(CustomerKey).filter(CustomerKey.api_key == x_api_key, CustomerKey.is_active == True).first()
     if not key_record or key_record.expires_at < datetime.utcnow():
@@ -19,32 +16,11 @@ def verify_key(x_api_key: str, db):
 
 @router.get("/sync-now")
 def force_sync_data():
-    """3대 자산(BTC, GOLD, OIL) 10-Matrix 데이터를 DB에 즉시 강제 생성"""
     try:
         run_market_data_pipeline()
         return {"status": "success", "message": "BTC, GOLD, OIL 3대 자산 데이터 적재 완료"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/latest")
-def get_latest_briefing(asset: str = Query("BTC"), x_api_key: str = Header("demo-key-2026")):
-    db = SessionLocal()
-    try:
-        verify_key(x_api_key, db)
-        record = db.query(BriefingRecord).filter(BriefingRecord.asset_type == asset.upper()).order_by(BriefingRecord.id.desc()).first()
-        if not record:
-            raise HTTPException(status_code=404, detail=f"No briefing found for {asset}")
-        return {
-            "id": record.id,
-            "asset_type": record.asset_type,
-            "title": record.title,
-            "summary": record.summary,
-            "full_content": record.full_content,
-            "key_metrics": record.key_metrics,
-            "created_at": record.created_at.isoformat()
-        }
-    finally:
-        db.close()
 
 @router.get("/history")
 def get_briefing_history(asset: str = Query("BTC"), limit: int = Query(20, ge=1, le=100), x_api_key: str = Header("demo-key-2026")):
