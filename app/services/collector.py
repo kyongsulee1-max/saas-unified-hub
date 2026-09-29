@@ -1,6 +1,6 @@
 # ==============================================================================
-# [SaaS Unified Hub] 실시간 1D 시세 수집 및 10-Matrix 퀀트 브리핑 파이프라인
-# 위치: app/services/collector.py
+# [SaaS Unified Hub] 1D Market Data Pipeline & 10-Matrix Quant Engine
+# File: app/services/collector.py
 # ==============================================================================
 import ccxt
 import yfinance as yf
@@ -13,37 +13,28 @@ from datetime import datetime, timezone
 from app.database import SessionLocal
 from app.models import BriefingRecord
 
-# 1. 1일봉 최적화 확정 파라미터
 TIMEFRAME = "1d"
-MIN_CONFLUENCE_GATE = 4      # 40% Gate (최소 4개 팩터 일치)
-TARGET_RISK_REWARD = 2.5     # 목표 손익비 1:2.5
-ATR_STOP_MULTIPLIER = 1.5    # 손절 ATR 버퍼 배수 1.5
-ADR_PERIOD = 14              # ADR 계산 일수 14일
-ADR_MIN_PERCENT = 2.0        # ADR 2.0% 미만 진입 차단
+MIN_CONFLUENCE_GATE = 4
+TARGET_RISK_REWARD = 2.5
+ATR_STOP_MULTIPLIER = 1.5
+ADR_PERIOD = 14
+ADR_MIN_PERCENT = 2.0
 
 def fetch_live_market_data(asset: str) -> dict:
-    """
-    OKX 및 Yahoo Finance에서 1일봉 실시간 시세와 캔들을 수집하여
-    핵심 지지선/저항선 및 10-Matrix 점수를 산출합니다.
-    """
     price = 0.0
     support = 0.0
     resistance = 0.0
     atr_14 = 0.0
     adr_14 = 0.0
     
-    # [1] 비트코인: OKX USDT 무기한 선물 (1D)
     if asset == "BTC":
         exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 10000})
         ticker = exchange.fetch_ticker('BTC/USDT:USDT')
-        price = float(ticker['last']) # 실제 82,900+ 달러 실측
+        price = float(ticker['last'])
         ohlcv = exchange.fetch_ohlcv('BTC/USDT:USDT', timeframe='1d', limit=60)
         df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-        
         support = round(float(df['low'].tail(14).min()), 1)
         resistance = round(float(df['high'].tail(14).max()), 1)
-        
-    # [2] 골드 & 원유: Yahoo Finance (1D)
     else:
         session = requests.Session()
         session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
@@ -52,37 +43,32 @@ def fetch_live_market_data(asset: str) -> dict:
         hist = yf_ticker.history(period="3mo", interval="1d")
         
         if hist.empty:
-            raise ValueError(f"{asset} 시세 데이터 수집 실패")
+            raise ValueError(f"{asset} fetch failed")
             
         price = round(float(hist['Close'].iloc[-1]), 1 if asset == "GOLD" else 2)
         support = round(float(hist['Low'].tail(14).min()), 1 if asset == "GOLD" else 2)
         resistance = round(float(hist['High'].tail(14).max()), 1 if asset == "GOLD" else 2)
         df = hist.reset_index().rename(columns={'Date': 'ts', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'vol'})
 
-    # 14일 ATR 계산
     tr1 = df['high'] - df['low']
     tr2 = np.abs(df['high'] - df['close'].shift())
     tr3 = np.abs(df['low'] - df['close'].shift())
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr_14 = float(tr.rolling(14).mean().iloc[-1])
 
-    # 14일 ADR(일일 평균 변동률 %) 계산
     daily_range_pct = ((df['high'] - df['low']) / df['close'].shift(1)) * 100
     adr_14 = float(daily_range_pct.tail(ADR_PERIOD).mean())
     adr_pass = adr_14 >= ADR_MIN_PERCENT
 
-    # 10-Matrix 정량 채점 (0 ~ 100점)
     bull_count = 0
     bear_count = 0
     
-    # 팩터 1: 1D 50% Equilibrium (중앙값 대비 저평가 여부)
     mid_equilibrium = (df['high'].max() + df['low'].min()) / 2.0
     if price < mid_equilibrium:
         bull_count += 1
     else:
         bear_count += 1
         
-    # 팩터 2: 1일봉 이평선 정배열
     ema_20 = df['close'].ewm(span=20).mean().iloc[-1]
     ema_50 = df['close'].ewm(span=50).mean().iloc[-1]
     if price > ema_20 and ema_20 > ema_50:
@@ -90,7 +76,6 @@ def fetch_live_market_data(asset: str) -> dict:
     else:
         bear_count += 2
 
-    # 팩터 3: RSI(14) 모멘텀
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -103,7 +88,6 @@ def fetch_live_market_data(asset: str) -> dict:
     total_bull = min(10, bull_count + 4)
     score = total_bull * 10
 
-    # 신호 및 레짐 판정
     if score >= 80 and adr_pass:
         signal = "QUANT LONG"
         trend = "BULL"
@@ -130,7 +114,6 @@ def fetch_live_market_data(asset: str) -> dict:
     }
 
 def generate_natural_korean_text(asset: str, price: float, score: int, support: float, resistance: float, signal: str):
-    """자연스러운 실전 한국어 트레이딩 문장을 생성합니다."""
     asset_kr = {"BTC": "비트코인", "GOLD": "국제 금", "OIL": "크루드 오일"}.get(asset, asset)
     
     if signal == "QUANT LONG":
@@ -153,10 +136,6 @@ def generate_natural_korean_text(asset: str, price: float, score: int, support: 
     return title, summary, full_content
 
 def run_market_data_pipeline():
-    """
-    BTC, GOLD, OIL 3대 자산의 실시간 데이터를 수집해
-    DB(BriefingRecord)에 누적 적재합니다.
-    """
     db = SessionLocal()
     assets = ["BTC", "GOLD", "OIL"]
     
@@ -172,7 +151,6 @@ def run_market_data_pipeline():
                 signal=data["signal"]
             )
             
-            # 구글 시트 앱스 스크립트가 파싱할 JSON 메트릭스
             key_metrics = {
                 "current_price": data["price"],
                 "price": data["price"],
